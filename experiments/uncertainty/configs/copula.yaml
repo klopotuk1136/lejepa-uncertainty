@@ -1,0 +1,54 @@
+# The copula world in 2-D: every mixing, six noise levels, three objectives, a lambda sweep.
+# This is the full 150-run sweep that was run with the old code.
+#
+#   python -m uncertainty.run --config uncertainty/configs/copula.yaml --run spiral --world mix=0.75 --seed 1337
+#   python -m uncertainty.run --config uncertainty/configs/copula.yaml --sweep --list
+#   python -m uncertainty.run --config uncertainty/configs/copula.yaml --sweep
+#
+# Noise contrast (noisiest / quietest standard deviation on [-3, 3]) for each mix:
+#   mix        0     0.25   0.5    0.75   0.9    1
+#   contrast   1.0   2.32   3.21   4.22   5.56   13.07
+# mix = 0 is exactly the paper's world.
+
+out: results/uncertainty/copula
+
+world: {type: copula, rho: 0.95}       # `mix` comes from the sweep or --world mix=...
+
+training:                              # the paper's 2-D settings
+  steps: 20000
+  lr: 3.0e-3
+  batch_size: 256
+  log_every: 500
+  num_eval: 10000
+
+evaluation: {}                         # overrides of uncertainty/evaluate.py DEFAULTS
+
+# observer + encoder + objective. Write numbers as 1.0e-3: PyYAML reads a bare 1e-3 as text.
+runs:
+  spiral:   {observer: spiral,   encoder: mlp, hidden: 256, mode: lejepa, lamb: 1.0e-3}
+  banana:   {observer: banana,   encoder: mlp, hidden: 256, mode: lejepa, lamb: 1.0e-3}
+  sinusoid: {observer: sinusoid, encoder: mlp, hidden: 256, mode: lejepa, lamb: 1.0e-3}
+  nvp_mlp:  {observer: nvp, n_layers: 8, encoder: mlp, hidden: 256, mode: lejepa, lamb: 1.0e-3}
+  # control: the encoder is the flow's exact inverse architecture, so it cannot squeeze area
+  nvp:      {observer: nvp, n_layers: 8, encoder: matched, mode: lejepa, lamb: 1.0e-3}
+  # other anti-collapse terms
+  spiral_whiten:    {observer: spiral,   encoder: mlp, hidden: 256, mode: whiten,  lamb: 0.5}
+  spiral_infonce:   {observer: spiral,   encoder: mlp, hidden: 256, mode: infonce, sigma: 1.0}
+  banana_whiten:    {observer: banana,   encoder: mlp, hidden: 256, mode: whiten,  lamb: 0.5}
+  banana_infonce:   {observer: banana,   encoder: mlp, hidden: 256, mode: infonce, sigma: 1.0}
+  sinusoid_whiten:  {observer: sinusoid, encoder: mlp, hidden: 256, mode: whiten,  lamb: 0.5}
+  sinusoid_infonce: {observer: sinusoid, encoder: mlp, hidden: 256, mode: infonce, sigma: 1.0}
+  # SIGReg weight around the default 1e-3
+  spiral_lam1e-5: {observer: spiral, encoder: mlp, hidden: 256, mode: lejepa, lamb: 1.0e-5}
+  spiral_lam1e-4: {observer: spiral, encoder: mlp, hidden: 256, mode: lejepa, lamb: 1.0e-4}
+  spiral_lam1e-2: {observer: spiral, encoder: mlp, hidden: 256, mode: lejepa, lamb: 1.0e-2}
+  spiral_lam1e-1: {observer: spiral, encoder: mlp, hidden: 256, mode: lejepa, lamb: 1.0e-1}
+
+seeds: [1337, 1338, 1339]
+
+# Runs in this order; each entry expands to runs x world settings x seeds.
+sweep:
+  - {runs: [spiral, banana, sinusoid, nvp_mlp, nvp], world: {mix: [0, 0.25, 0.5, 0.75, 0.9, 1]}}
+  - {runs: [spiral_whiten, spiral_infonce, banana_whiten, banana_infonce,
+            sinusoid_whiten, sinusoid_infonce], world: {mix: [0, 1]}}
+  - {runs: [spiral_lam1e-5, spiral_lam1e-4, spiral_lam1e-2, spiral_lam1e-1], world: {mix: [0, 1]}}

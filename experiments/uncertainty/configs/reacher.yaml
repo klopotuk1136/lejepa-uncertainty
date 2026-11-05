@@ -1,0 +1,39 @@
+# DMC Reacher from pixels in the copula world: the paper's Reacher experiment with its
+# transition replaced. z = the two joint angles (radians); the encoder sees 64x64 frames.
+#
+#   python -m uncertainty.checks reacher                                    # can this machine render?
+#   python -m uncertainty.run --config uncertainty/configs/reacher.yaml --sweep --list
+#   python -m uncertainty.run --config uncertainty/configs/reacher.yaml --sweep
+#
+# Needs an OpenGL context: on the Windows server, run from a desktop (RDP) session, not
+# plain SSH. Each world's 200k training frames are rendered once and cached under
+# data_root/<world tag>; a sweep can be stopped and restarted.
+
+out: results/uncertainty/reacher
+data_root: data/reacher
+
+world: {type: copula, rho: 0.95}
+
+training:                    # the paper's Reacher settings
+  epochs: 100
+  batch_size: 256
+  lr: 3.0e-3
+  n_slices: 256
+  n_eval_fast: 2000
+  n_train: 100000            # training pairs rendered per world
+  render_seed: 9999
+  num_workers: 0             # Windows: each worker would get a copy of ~10 GB of images
+
+evaluation:
+  n_views: 128               # rendering is the cost: 1184 x 128 frames for the residual
+  view_chunk: 16
+  n_smooth: 0                # a smoothed Jacobian would need 48x more renders
+  fd_eps: 0.1                # finite-difference step through the renderer (radians)
+
+runs:
+  reacher: {observer: reacher, encoder: cnn, lamb: 1.0e-3}
+
+seeds: [0, 1, 2]
+
+sweep:
+  - {runs: [reacher], world: {mix: [0.75, 0.9, 0]}}     # 4.2x, 5.6x, uniform control
