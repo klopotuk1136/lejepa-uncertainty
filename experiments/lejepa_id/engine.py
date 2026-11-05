@@ -40,6 +40,7 @@ def train_and_evaluate(
     z_eval,
     log_every=100,
     device="cuda",
+    transition_fn=None,
 ):
     """Train encoder and evaluate periodically.
 
@@ -57,11 +58,19 @@ def train_and_evaluate(
         z_eval: (num_eval, N) fixed eval tensor
         log_every: eval frequency
         device: torch device string
+        transition_fn: callable (z, n_views) -> (V, B, N). Defaults to the
+            homoscedastic OU channel, i.e. the paper's world. The uncertainty
+            package passes a world's sample_next (uncertainty/worlds.py).
 
     Returns:
         encoder: trained encoder
         log: dict of lists — training curves and periodic eval metrics
     """
+    if transition_fn is None:
+        def transition_fn(z, n_views=2):
+            return ou_augment(z, rho, n_views=n_views,
+                              dist=source_dist, alpha=source_alpha)
+
     sigreg = SIGReg().to(device)
     opt = torch.optim.AdamW(encoder.parameters(), lr=lr)
 
@@ -89,7 +98,7 @@ def train_and_evaluate(
         # Online data
         z_batch = sample_latents(batch_size, N, dist=source_dist,
                                  device=device, alpha=source_alpha)
-        z_aug = ou_augment(z_batch, rho, dist=source_dist, alpha=source_alpha)  # (2, B, N)
+        z_aug = transition_fn(z_batch, 2)                                       # (2, B, N)
         h = encoder(mix_fn(z_aug).flatten(0, 1)).reshape(2, batch_size, N)
 
         align = alignment_loss(h)
@@ -121,10 +130,7 @@ def train_and_evaluate(
             encoder.eval()
             with torch.no_grad():
                 h_eval = encoder(x_eval)
-                z_prime = ou_augment(
-                    z_eval, rho, n_views=1, 
-                    dist=source_dist, alpha=source_alpha
-                ).squeeze(0)
+                z_prime = transition_fn(z_eval, 1).squeeze(0)
                 h_prime = encoder(mix_fn(z_prime))
 
             metrics = compute_all_metrics(z_eval, x_eval, h_eval, h_prime, rho, N)
