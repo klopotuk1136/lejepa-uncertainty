@@ -11,6 +11,9 @@ scores per readout: Spearman rho and R^2 against the true noise; plus two diagno
 
 All sampling inside evaluate() starts from `settings["seed"]`, so evaluating the same
 encoder twice gives the same numbers.
+
+Two steps of evaluate() are separate functions so redo_jacobian.py can rerun only them on
+a saved run: jacobian_readouts() (J and the readouts made from it) and score().
 """
 
 import math
@@ -30,7 +33,7 @@ DEFAULTS = {
     "k_neighbours": 200,     # logged frames averaged per probe state by step_size
     "smooth_width": None,    # smoothing window for the Jacobian; None = one noise step
     "n_smooth": 48,
-    "fd_eps": 0.1,           # finite-difference step (observers without autograd)
+    "fd_eps": None,          # finite-difference step (observers without autograd); None = one noise step
     "max_cond": 1e4,         # exact recovery skips states where J is nearly singular
 }
 
@@ -82,17 +85,9 @@ def evaluate(encoder, observer, world, settings=None, logged=None):
     maps["sigma_hat"] = torch.cat(covs)
     parts = {"residual": est.residual(maps["sigma_hat"])}
 
-    # geometry: the Jacobian of z -> x -> h, plain and smoothed over one noise step
-    maps["J"] = est.jacobian(encoder, observer, z, eps=s["fd_eps"])
-    parts["geometry"] = est.geometry(maps["J"])
-    width = s["smooth_width"] or math.sqrt(1 - world.rho ** 2)
-    if s["n_smooth"]:
-        J_smooth = est.smoothed_jacobian(encoder, observer, z, width, s["n_smooth"], eps=s["fd_eps"])
-        parts["smoothed_geometry"] = est.geometry(J_smooth)
-    if observer.differentiable:
-        x = observer.observe(z.to(next(encoder.parameters()).device))
-        if x.shape[1:] == z.shape[1:]:                    # encoder Jacobian is square only in 2-D
-            parts["encoder_geometry"] = est.geometry(est.encoder_jacobian(encoder, x))
+    # geometry: the Jacobian of z -> x -> h (draws no random numbers)
+    maps["J"], geometry_parts = jacobian_readouts(encoder, observer, world, z, s)
+    parts.update(geometry_parts)
 
     # logged data: step size and density excess
     if logged is None:
@@ -104,7 +99,35 @@ def evaluate(encoder, observer, world, settings=None, logged=None):
     parts["step_size"] = est.step_size(h_t, h_next, h, s["k_neighbours"])
     parts["density_excess"] = est.density_excess(h_t, h)
 
-    # combine into readouts and score them
+    scores = score(maps, parts, world, s)
+    if was_training:
+        encoder.train()
+    return maps, scores
+
+
+def jacobian_readouts(encoder, observer, world, z, settings):
+    """J on the probe states z, and the readouts made from it: geometry, smoothed geometry
+    (if n_smooth > 0) and encoder-only geometry (2-D only). Returns (J, parts)."""
+    s = {**DEFAULTS, **settings}
+    noise_step = math.sqrt(1 - world.rho ** 2)       # spread of one step of the paper's channel
+    eps = s["fd_eps"] or noise_step
+    J = est.jacobian(encoder, observer, z, eps=eps)
+    parts = {"geometry": est.geometry(J)}
+    if s["n_smooth"]:
+        width = s["smooth_width"] or noise_step
+        parts["smoothed_geometry"] = est.geometry(
+            est.smoothed_jacobian(encoder, observer, z, width, s["n_smooth"], eps=eps))
+    if observer.differentiable:
+        x = observer.observe(z.to(next(encoder.parameters()).device))
+        if x.shape[1:] == z.shape[1:]:                    # encoder Jacobian is square only in 2-D
+            parts["encoder_geometry"] = est.geometry(est.encoder_jacobian(encoder, x))
+    return J, parts
+
+
+def score(maps, parts, world, settings):
+    """Sum the estimator maps (parts) into the READOUTS, store them in maps, and score each
+    against the true noise. Needs maps["z"], maps["true_noise"], maps["sigma_hat"], maps["J"]."""
+    s = {**DEFAULTS, **settings}
     truth = maps["true_noise"].double()
     scores = {}
     for name, needed in READOUTS.items():
@@ -112,11 +135,8 @@ def evaluate(encoder, observer, world, settings=None, logged=None):
             maps[name] = sum(parts[k].double() for k in needed).float()
             scores[f"rho: {name}"] = spearman(maps[name], truth)
             scores[f"R2: {name}"] = r2_offset_free(maps[name], truth)
-    scores.update(exact_recovery(maps["sigma_hat"], maps["J"], world.true_noise(z), s["max_cond"]))
-
-    if was_training:
-        encoder.train()
-    return maps, scores
+    scores.update(exact_recovery(maps["sigma_hat"], maps["J"], world.true_noise(maps["z"]), s["max_cond"]))
+    return scores
 
 
 # =============================================================================

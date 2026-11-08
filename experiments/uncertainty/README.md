@@ -20,6 +20,7 @@ Run every command from `experiments/`.
 | `evaluate.py` | runs every readout and scores it against the true noise | `evaluate(encoder, observer, world)` |
 | `run.py` | config -> train (paper's code) -> evaluate -> save | command line |
 | `reevaluate.py` | evaluates old runs (from the old `run.py`) with this code | command line |
+| `redo_jacobian.py` | recomputes the Jacobian readouts of saved Reacher runs with another finite-difference step | command line |
 | `plots.py` | pictures from saved results | command line |
 | `checks.py` | sanity checks before training | command line |
 | `configs/` | `copula.yaml` (2-D, the 150-run sweep), `reacher.yaml` | |
@@ -79,7 +80,14 @@ Reacher (needs `dm_control` and an OpenGL context; on Windows a desktop session)
 ```bash
 python -m uncertainty.checks reacher
 python -m uncertainty.run --config uncertainty/configs/reacher.yaml --sweep
+
+# saved runs, J with another finite-difference step (no retraining) -> results/uncertainty/reacher_fd_eps=<step>
+python -m uncertainty.redo_jacobian --config uncertainty/configs/reacher.yaml --fd_eps 0.1 0.2 0.31 0.5
 ```
+
+The Reacher renderer is not differentiable, so J = dh/dz is a central difference with step
+`fd_eps` (radians). It should be about one noise step (√(1−ρ²) = 0.31): at 0.1 the
+fingertip moves 1–2 pixels and J measures pixel steps (linearization error 2–3.5).
 
 ## What a run saves
 

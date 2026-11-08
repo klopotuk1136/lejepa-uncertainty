@@ -37,7 +37,7 @@ from lejepa_id.metrics import compute_all_metrics, compute_recovery_metrics
 from lejepa_id.models import make_cnn_encoder, make_matched_encoder, make_mlp_encoder
 
 from .estimators import embed_observations
-from .evaluate import evaluate
+from .evaluate import DEFAULTS, evaluate
 from .observers import make_observer, paper_renderer
 from .worlds import make_world
 
@@ -229,7 +229,8 @@ def run_one(cfg, run, world_settings, seed, device, steps=None):
     result = {"name": name, "run": run, **run_cfg, "world": {**cfg["world"], **world_settings},
               "world_tag": world.tag, "contrast": world.contrast(), "rho": world.rho, "seed": seed,
               "steps": train_cfg.get("steps"), "epochs": train_cfg.get("epochs"),
-              "minutes": (time.time() - t0) / 60, **metrics, **scores}
+              "minutes": (time.time() - t0) / 60, **metrics, **scores,
+              "evaluation": {**DEFAULTS, **(cfg.get("evaluation") or {})}}
     save(cfg["out"], name, result, log, encoder, maps, (z_plot, x_plot, h_plot))
     print_summary(result)
     return result

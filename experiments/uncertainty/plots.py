@@ -12,6 +12,9 @@ world     true latent z | what the encoder sees x | what it learned h, coloured 
 readouts  true noise and readout maps over the probe states, each panel coloured by the
           rank of its own values. Titles give rho, averaged over every seed of the same setup
           found next to the file.  -> <out>/Uncertainty/<name>.png
+reacher   Reacher only: four poses from quiet to noisy, each drawn as the average of 64
+          rendered next frames (renders, so it needs dm_control), plus the true and predicted
+          noise maps with those poses marked.  -> <out>/Reacher/<name>.png
 sweep     rho (and identifiability) against noise contrast, one line per run, for every
           .json in the folder.  -> <out>/sweep/by_world.png and by_readout.png
 """
@@ -154,6 +157,73 @@ def readouts_figure(saved, path, panels):
 
 
 # =============================================================================
+# reacher: the noise on the arm, and what the encoder predicts
+# =============================================================================
+
+def example_poses(z, truth, quantiles=(0.05, 0.4, 0.75, 0.97), radius=2.0):
+    """Probe poses from quiet to noisy: the poses whose true noise is closest to the given
+    quantiles, among poses within `radius` of the centre (where training data is dense)."""
+    inside = np.flatnonzero(np.linalg.norm(z, axis=1) <= radius)
+    levels = np.quantile(truth[inside], quantiles)
+    return [int(inside[np.argmin(np.abs(truth[inside] - lv))]) for lv in levels]
+
+
+def reacher_figure(saved, readouts, n_next=64, seed=0):
+    """Top: four poses from quiet to noisy, each drawn as the average of n_next rendered
+    frames of its possible next poses (sharp arm = predictable, blurred fan = not).
+    Bottom: true noise and two readouts over all probe poses, with the four poses marked,
+    and predicted against true rank."""
+    from .observers import ReacherCamera
+    r, maps = saved["result"], saved["maps"]
+    world, camera = make_world(r["world"]), ReacherCamera()
+    z, truth = maps["z"].numpy(), maps["true_noise"].numpy()
+    readouts = [k for k in readouts if k in maps][:2]
+    ranks = {k: rank01(maps[k].numpy()) for k in ["true_noise"] + readouts}
+    poses = example_poses(z, truth)
+
+    fig, axes = plt.subplots(2, 4, figsize=(17, 9.6))
+    torch.manual_seed(seed)
+    for n, (ax, i) in enumerate(zip(axes[0], poses), start=1):
+        next_poses = world.sample_next(maps["z"][i:i + 1], n_next)[:, 0]          # (n_next, 2)
+        ghost = camera.observe(next_poses).float().mean(0) / 255                  # average frame
+        ax.imshow(ghost.permute(1, 2, 0).numpy())
+        ax.axis("off")
+        # percent of probe poses that are quieter than this one: truly, and as predicted
+        lines = [f"pose {n}: shoulder {z[i, 0]:+.1f}, wrist {z[i, 1]:+.1f} rad",
+                 f"truly noisier than {100 * ranks['true_noise'][i]:.0f}% of poses"]
+        lines += [f"{LABELS.get(k, k)}: {100 * ranks[k][i]:.0f}%" for k in readouts]
+        ax.set_title("\n".join(lines), fontsize=9)
+
+    step = np.min(np.diff(np.unique(z[:, 0])))
+    panels = [("true noise", "true_noise", None)] + [(LABELS.get(k, k), k, r.get(f"rho: {k}")) for k in readouts]
+    for ax, (name, key, rho) in zip(axes[1], panels):
+        sc = ax.scatter(z[:, 0], z[:, 1], c=ranks[key], s=(step * 30) ** 2, marker="s",
+                        cmap="inferno", vmin=0, vmax=1, linewidths=0)
+        for n, i in enumerate(poses, start=1):
+            ax.text(z[i, 0], z[i, 1], str(n), color="cyan", fontsize=11, fontweight="bold",
+                    ha="center", va="center")
+        ax.set_title(name if rho is None else f"{name}   (ρ = {rho:+.2f})", fontsize=10)
+        ax.set_xlabel("shoulder angle (rad)")
+        ax.set_ylabel("wrist angle (rad)")
+        ax.set_aspect("equal")
+        ax.set_xlim(-3.3, 3.3), ax.set_ylim(-3.3, 3.3)
+
+    ax = axes[1][3]
+    if readouts:
+        ax.scatter(ranks["true_noise"], ranks[readouts[0]], s=3, alpha=0.5)
+        ax.plot([0, 1], [0, 1], color="grey", lw=0.8)
+        ax.set_xlabel("true noise (rank)")
+        ax.set_ylabel(f"{LABELS.get(readouts[0], readouts[0])} (rank)")
+        ax.set_aspect("equal")
+        ax.set_title("every probe pose: predicted vs true", fontsize=10)
+    fig.suptitle(f"{title_of(r)}\ntop: average of {n_next} possible next frames per pose (blur = "
+                 f"unpredictable).  bottom: noise over all poses, ranked from quietest (dark) to "
+                 f"noisiest (bright)", fontsize=11)
+    fig.subplots_adjust(top=0.84, bottom=0.06, left=0.05, right=0.98, hspace=0.25, wspace=0.3)
+    return fig
+
+
+# =============================================================================
 # sweep: scores against noise contrast
 # =============================================================================
 
@@ -226,10 +296,10 @@ def sweep_by_readout(groups, runs, readouts):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("kind", choices=["world", "readouts", "sweep"])
-    ap.add_argument("paths", nargs="+", help=".pt files (world, readouts) or one results folder (sweep)")
+    ap.add_argument("kind", choices=["world", "readouts", "reacher", "sweep"])
+    ap.add_argument("paths", nargs="+", help=".pt files (world, readouts, reacher) or one results folder (sweep)")
     ap.add_argument("--out", default="figures")
-    ap.add_argument("--panels", nargs="+", default=DEFAULT_PANELS, help="readouts to show")
+    ap.add_argument("--panels", nargs="+", help="readouts to show (reacher: the first two)")
     ap.add_argument("--runs", nargs="+", help="sweep: runs to draw (default: all)")
     a = ap.parse_args()
 
@@ -238,17 +308,22 @@ def main():
         runs = a.runs or sorted(groups)
         os.makedirs(os.path.join(a.out, "sweep"), exist_ok=True)
         for name, fn in [("by_world", sweep_by_world), ("by_readout", sweep_by_readout)]:
-            fig = fn(groups, runs, a.panels)
+            fig = fn(groups, runs, a.panels or DEFAULT_PANELS)
             fig.savefig(os.path.join(a.out, "sweep", f"{name}.png"), dpi=150)
             plt.close(fig)
         print("saved to", os.path.abspath(os.path.join(a.out, "sweep")))
         return
 
-    folder = "Latent structure" if a.kind == "world" else "Uncertainty"
+    folder = {"world": "Latent structure", "readouts": "Uncertainty", "reacher": "Reacher"}[a.kind]
     os.makedirs(os.path.join(a.out, folder), exist_ok=True)
     for path in a.paths:
         saved = torch.load(path, map_location="cpu", weights_only=False)
-        fig = world_figure(saved) if a.kind == "world" else readouts_figure(saved, path, a.panels)
+        if a.kind == "world":
+            fig = world_figure(saved)
+        elif a.kind == "readouts":
+            fig = readouts_figure(saved, path, a.panels or DEFAULT_PANELS)
+        else:
+            fig = reacher_figure(saved, a.panels or ["residual + geometry", "step size + density excess"])
         out = os.path.join(a.out, folder, os.path.basename(path)[:-3] + ".png")
         fig.savefig(out, dpi=160)
         plt.close(fig)

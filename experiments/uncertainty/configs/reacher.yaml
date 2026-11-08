@@ -28,7 +28,9 @@ evaluation:
   n_views: 128               # rendering is the cost: 1184 x 128 frames for the residual
   view_chunk: 16
   n_smooth: 0                # a smoothed Jacobian would need 48x more renders
-  fd_eps: 0.1                # finite-difference step through the renderer (radians)
+  fd_eps: 0.31               # finite-difference step through the renderer (radians): one noise
+                             # step, sqrt(1 - 0.95^2). 0.1 (first server runs) moved the
+                             # fingertip by 1-2 pixels, so J measured pixel steps.
 
 runs:
   reacher: {observer: reacher, encoder: cnn, lamb: 1.0e-3}
